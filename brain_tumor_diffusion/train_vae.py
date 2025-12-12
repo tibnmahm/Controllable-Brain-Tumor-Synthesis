@@ -1,0 +1,127 @@
+# train_vae.py
+import os
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import numpy as np
+from monai.losses import DiceLoss
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+
+# --- Custom VAE (with explicit encoder/decoder) ---
+class CustomVAE(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Encoder: 256 -> 128 -> 64 -> 32 -> 16
+        self.encoder = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1),   # 256 -> 128
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # 128 -> 64
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1), # 64 -> 32
+            nn.ReLU(),
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1) # 32 -> 16
+        )
+        # Decoder: 16 -> 32 -> 64 -> 128 -> 256
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 1, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.Sigmoid()  # output in [0, 1]
+        )
+
+    def encode(self, x):
+        return self.encoder(x)  # (B, 256, 14, 14)
+
+    def decode(self, z):
+        return self.decoder(z)
+
+    def forward(self, x):
+        z = self.encode(x)
+        return self.decode(z)
+
+# --- Dataset ---
+class Tumor2DDataset(Dataset):
+    def __init__(self, root="2d_data"):
+        self.image_files = sorted([os.path.join(root, "images", f) for f in os.listdir(os.path.join(root, "images")) if f.endswith(".npy")])
+        self.mask_files = sorted([os.path.join(root, "masks", f) for f in os.listdir(os.path.join(root, "masks")) if f.endswith(".npy")])
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx):
+        img = np.load(self.image_files[idx]).astype(np.float32)[None]  # (1, H, W)
+        mask = np.load(self.mask_files[idx]).astype(np.float32)[None]  # (1, H, W)
+        return torch.tensor(img), torch.tensor(mask)
+
+# --- Model ---
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+vae = CustomVAE().to(device)
+
+# --- Losses ---
+recon_loss = nn.MSELoss()
+dice_loss = DiceLoss(sigmoid=True)
+
+# --- Data ---
+dataset = Tumor2DDataset()
+dataloader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=4)
+
+# --- Optimizer ---
+optimizer = optim.Adam(vae.parameters(), lr=1e-4)
+
+# --- Create directory for samples ---
+os.makedirs("vae_samples", exist_ok=True)
+
+# --- Training ---
+vae.train()
+for epoch in range(30):
+    epoch_loss = 0
+    for img, mask in tqdm(dataloader, desc=f"Epoch {epoch+1}"):
+        img, mask = img.to(device), mask.to(device)
+        recon = vae(img)
+
+        loss_img = recon_loss(recon, img)
+        loss_mask = dice_loss(recon, mask)
+        loss = loss_img + loss_mask
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        epoch_loss += loss.item()
+
+    print(f"Epoch {epoch+1}, Loss: {epoch_loss/len(dataloader):.4f}")
+
+    # --- Save sample reconstructions every 5 epochs ---
+    if (epoch + 1) % 5 == 0:
+        vae.eval()
+        with torch.no_grad():
+            sample_img, sample_mask = next(iter(DataLoader(dataset, batch_size=4, shuffle=True)))
+            sample_img = sample_img.to(device)
+            recon_img = vae(sample_img)
+
+            fig, axs = plt.subplots(1, 3, figsize=(12, 4))
+            axs[0].imshow(sample_img[0, 0].cpu(), cmap='gray')
+            axs[0].set_title('Input')
+            axs[0].axis('off')
+
+            axs[1].imshow(recon_img[0, 0].cpu(), cmap='gray')
+            axs[1].set_title('Reconstruction')
+            axs[1].axis('off')
+
+            axs[2].imshow(sample_mask[0, 0], cmap='gray')
+            axs[2].set_title('Tumor Mask')
+            axs[2].axis('off')
+
+            plt.tight_layout()
+            plt.savefig(f"vae_samples/epoch_{epoch+1}.png", dpi=150)
+            plt.close()
+        vae.train()
+
+torch.save(vae.state_dict(), "vae.pth")
+print("✅ Custom VAE saved as vae.pth")
+print("📸 Samples saved in vae_samples/")

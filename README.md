@@ -43,7 +43,7 @@ Dataset:
 Medical Segmentation Decathlon – Task 01 (Brain Tumor)
 
 Required Scripts:
-* train_direct_vae.py → Deterministic VAE (Baseline)
+* train_direct_vae.py → Deterministic VAE
 * train_gan.py → Direct Conditional GAN
 * train_vae_gan.py → Latent-Space GAN
 * train_diffusion.py → Latent Diffusion Model

@@ -43,6 +43,7 @@ Dataset:
 Medical Segmentation Decathlon – Task 01 (Brain Tumor)
 
 Required Scripts:
+* extract_2d.py → Used this code to convert 3D data to 2D axial slices. (Did not keep the 3D data due to data size)
 * train_direct_vae.py → Deterministic VAE
 * train_gan.py → Direct Conditional GAN
 * train_vae_gan.py → Latent-Space GAN
